@@ -11,6 +11,10 @@ import yt_dlp
 import shutil
 import subprocess
 
+# Fix encoding for Windows console
+if sys.platform == 'win32':
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+
 
 class YouTubeTranscriptor:
     def __init__(self, output_dir="transcripts"):
@@ -142,6 +146,73 @@ class YouTubeTranscriptor:
             print(f"Traceback: {traceback.format_exc()}")
             sys.exit(1)
     
+    def extract_steps(self, text):
+        """Extract numbered steps or rules from transcript"""
+        import re
+        
+        steps = []
+        
+        # Pattern: matches formats like:
+        # - "rule number X is [Title]."
+        # - "Rule number X, [Title]."
+        # - "role number X is [Title]." (typo variation)
+        pattern = r'(?:rule|role)\s+number\s+(\w+)(?:\s+(?:is|are)\s+)?[,.]?\s+([^.!?]+)[.!?]'
+        
+        matches = list(re.finditer(pattern, text, re.IGNORECASE))
+        
+        if not matches:
+            return steps
+        
+        # Map word numbers to digits
+        word_to_num = {
+            'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+            'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10
+        }
+        
+        for i, match in enumerate(matches):
+            step_word = match.group(1).lower()
+            step_num = word_to_num.get(step_word, i + 1)
+            step_title = match.group(2).strip().rstrip('.,!?')
+            
+            # Clean up title - remove leading "is/are" words
+            step_title = re.sub(r'^(?:is|are)\s+', '', step_title, flags=re.IGNORECASE).strip()
+            # Also handle cases like "Our rule number two is design" -> "design"
+            step_title = re.sub(r'^(?:Our|our)\s+(?:rule|role)\s+number\s+\w+\s+(?:is|are)\s+', '', step_title, flags=re.IGNORECASE).strip()
+            
+            # Find content: from end of title to next rule or reasonable limit
+            start_pos = match.end()
+            
+            # Look for next rule
+            if i + 1 < len(matches):
+                end_pos = matches[i + 1].start()
+            else:
+                end_pos = min(start_pos + 1000, len(text))
+            
+            step_content = text[start_pos:end_pos].strip()
+            
+            # Clean up content
+            step_content = step_content.replace('\n', ' ')
+            # Remove leading/trailing whitespace and limit length
+            step_content = ' '.join(step_content.split())
+            if len(step_content) > 700:
+                step_content = step_content[:700].rsplit(' ', 1)[0] + '...'
+            
+            steps.append({
+                'number': step_num,
+                'title': step_title.strip(),
+                'content': step_content
+            })
+        
+        # Sort by step number and remove duplicates
+        seen = set()
+        unique_steps = []
+        for step in sorted(steps, key=lambda x: x['number']):
+            if step['number'] not in seen:
+                seen.add(step['number'])
+                unique_steps.append(step)
+        
+        return unique_steps
+    
     def extract_key_points(self, text, num_sentences=5):
         """Extract key points using summarization"""
         print(f"\n🎯 Extracting key points...")
@@ -168,7 +239,7 @@ class YouTubeTranscriptor:
             print(f"⚠️  Could not extract key points: {e}")
             return text[:500] + "..."
     
-    def save_results(self, url, transcript, key_points):
+    def save_results(self, url, transcript, key_points, steps=None):
         """Save transcript and summary to files"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
@@ -178,6 +249,20 @@ class YouTubeTranscriptor:
         
         # Save JSON file
         json_file = self.output_dir / f"{base_name}.json"
+        text_file = self.output_dir / f"{base_name}.txt"
+        
+        # Check if files already exist
+        if json_file.exists() or text_file.exists():
+            print(f"\n⚠️  Files with similar name already exist:")
+            if json_file.exists():
+                print(f"   - {json_file}")
+            if text_file.exists():
+                print(f"   - {text_file}")
+            response = input("\nDo you want to overwrite these files? (yes/no): ").strip().lower()
+            if response not in ['yes', 'y']:
+                print("❌ Operation cancelled. Files not overwritten.")
+                return None
+        
         results = {
             "title": self.video_title,
             "url": url,
@@ -185,6 +270,7 @@ class YouTubeTranscriptor:
             "timestamp": timestamp,
             "transcript": transcript,
             "key_points": key_points,
+            "steps": steps or [],
             "transcript_length": len(transcript),
             "key_points_length": len(key_points)
         }
@@ -192,15 +278,25 @@ class YouTubeTranscriptor:
         with open(json_file, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
         
-        # Save human-readable text file
-        text_file = self.output_dir / f"{base_name}.txt"
+        # Save human-readable text file with practical guide
         with open(text_file, 'w', encoding='utf-8') as f:
             f.write(f"YOUTUBE VIDEO TRANSCRIPT\n")
             f.write(f"{'='*80}\n\n")
             f.write(f"Title: {self.video_title}\n")
             f.write(f"URL: {url}\n")
             f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"\n{'='*80}\n")
+            
+            # Add practical guide section if steps were found
+            if steps:
+                f.write(f"\n{'='*80}\n")
+                f.write(f"PRACTICAL GUIDE - ACTIONABLE STEPS\n")
+                f.write(f"{'='*80}\n\n")
+                for step in steps:
+                    f.write(f"STEP {step['number']}: {step['title'].upper()}\n")
+                    f.write(f"{'-'*80}\n")
+                    f.write(f"{step['content']}\n\n")
+            
+            f.write(f"{'='*80}\n")
             f.write(f"KEY POINTS & SUMMARY\n")
             f.write(f"{'='*80}\n\n")
             f.write(key_points)
@@ -241,12 +337,30 @@ class YouTubeTranscriptor:
             # Step 3: Extract key points
             key_points = self.extract_key_points(transcript)
             
-            # Step 4: Save results
-            output_file = self.save_results(youtube_url, transcript, key_points)
+            # Step 4: Extract actionable steps
+            print(f"\n📋 Extracting actionable steps...")
+            steps = self.extract_steps(transcript)
+            if steps:
+                print(f"✅ Found {len(steps)} actionable steps")
+            else:
+                print(f"⚠️  No structured steps found")
+            
+            # Step 5: Save results
+            output_file = self.save_results(youtube_url, transcript, key_points, steps)
             
             # Display results
             print("\n" + "="*60)
-            print("TRANSCRIPT")
+            print("PRACTICAL GUIDE - STEPS")
+            print("="*60)
+            if steps:
+                for step in steps:
+                    print(f"\nStep {step['number']}: {step['title']}")
+                    print(f"  {step['content'][:200]}...")
+            else:
+                print("No structured steps found in transcript")
+            
+            print("\n" + "="*60)
+            print("TRANSCRIPT (preview)")
             print("="*60)
             transcript_str = str(transcript)
             print((transcript_str[:1000] + "...") if len(transcript_str) > 1000 else transcript_str)
@@ -260,7 +374,8 @@ class YouTubeTranscriptor:
                 "success": True,
                 "output_file": str(output_file),
                 "transcript": transcript,
-                "key_points": key_points
+                "key_points": key_points,
+                "steps": steps
             }
             
         finally:
@@ -269,6 +384,11 @@ class YouTubeTranscriptor:
 
 
 def main():
+    # Handle Unicode encoding on Windows
+    if sys.platform == 'win32':
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    
     if len(sys.argv) < 2:
         print("Usage: python transcriptor.py <YouTube_URL>")
         print("\nExample: python transcriptor.py 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'")
