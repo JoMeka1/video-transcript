@@ -1,0 +1,8 @@
+yt-dlp>=2024.12.23
+openai-whisper>=20240930
+torch>=2.0.1
+transformers>=4.36.2
+numpy>=1.24.3
+tqdm>=4.66.1
+setuptools>=70.0.0
+ffmpeg-python>=0.2.1
