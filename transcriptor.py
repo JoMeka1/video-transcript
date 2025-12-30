@@ -1,6 +1,7 @@
 import os
 import sys
 from pathlib import Path
+from typing import Any
 import whisper
 from transformers import pipeline
 from tqdm import tqdm
@@ -72,25 +73,25 @@ class YouTubeTranscriptor:
         try:
             # If FFmpeg is available, download as mp3
             if self.ffmpeg_available:
-                ydl_opts = {
+                ydl_opts: dict[str, Any] = {
                     'format': 'bestaudio[ext=mp3]/bestaudio/best',
                     'outtmpl': str(self.temp_dir / 'audio'),
                     'quiet': False,
                     'postprocessors': [{
                         'key': 'FFmpegExtractAudio',
                         'preferredcodec': 'mp3',
-                        'preferredquality': '192',
+                        'preferredquality': 192,
                     }],
                 }
             else:
                 # Download as best available audio format (usually webm/opus)
-                ydl_opts = {
+                ydl_opts: dict[str, Any] = {
                     'format': 'bestaudio/best',
                     'outtmpl': str(self.temp_dir / 'audio'),
                     'quiet': False,
                 }
             
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore
                 info = ydl.extract_info(youtube_url, download=True)
                 # Store video metadata
                 self.video_title = info.get('title', 'Unknown')
@@ -247,7 +248,8 @@ class YouTubeTranscriptor:
             print("\n" + "="*60)
             print("TRANSCRIPT")
             print("="*60)
-            print(transcript[:1000] + "..." if len(transcript) > 1000 else transcript)
+            transcript_str = str(transcript)
+            print((transcript_str[:1000] + "...") if len(transcript_str) > 1000 else transcript_str)
             
             print("\n" + "="*60)
             print("KEY POINTS & SUMMARY")
